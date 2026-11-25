@@ -11,15 +11,13 @@ export const TEST_MODE: boolean = import.meta.env.VITE_TEST_MODE === 'true';
  * يمكن للمطور فقط تعديل هذه القيم هنا مباشرة أو عبر متغيرات البيئة (VITE_DEV_*) قبل بناء التطبيق.
  */
 export const DEVELOPER_INFO: Readonly<DeveloperInfo> = Object.freeze({
-  name:
-    (import.meta.env.VITE_DEV_NAME || '').trim() ||
-    'مطور تطبيق المليون العراقي',
+  name: (import.meta.env.VITE_DEV_NAME || '').trim() || 'MUSTAFA SALAM',
   role:
     (import.meta.env.VITE_DEV_ROLE || '').trim() ||
     'تصميم وتطوير التطبيقات العراقية',
   email:
     (import.meta.env.VITE_DEV_EMAIL || '').trim() ||
-    'contact@iraqimillion.app',
+    'mustafaalqaraawi@gmail.com',
   website:
     (import.meta.env.VITE_DEV_WEBSITE || '').trim() || 'iraqimillion.app',
   bio:

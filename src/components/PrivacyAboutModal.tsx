@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   Check,
   Database,
+  Mail,
   Megaphone,
   Share2,
   ShieldCheck,
@@ -143,15 +144,36 @@ export function PrivacyAboutModal({
                 />
                 <div>
                   <h3 className="text-xs sm:text-sm font-bold text-[#F8F5EE]">
-                    العمل بدون إنترنت وتطوير التطبيق
+                    العمل بدون إنترنت
                   </h3>
                   <p className="text-xs text-[#F8F5EE]/70 mt-1">
                     جميع الأسئلة والأمثال والحكم محفوظة داخل التطبيق لتستمتع
-                    باللعب دون إنترنت. للتواصل مع المطور ({DEVELOPER_INFO.name}):{' '}
-                    <span dir="ltr" className="text-[#F2C96B]">
-                      {DEVELOPER_INFO.email}
-                    </span>
+                    باللعب دون إنترنت في أي وقت.
                   </p>
+                </div>
+              </div>
+
+              {/* Fixed Immutable Developer Credit */}
+              <div className="rounded-xl bg-[#08122B] border border-[#D9A441]/30 p-3.5 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-[#F2C96B]">
+                  <span>تطوير:</span>
+                  <span dir="ltr" className="tracking-wide text-[#F8F5EE]">
+                    {DEVELOPER_INFO.name}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#F8F5EE]/75">
+                  <Mail
+                    className="h-3.5 w-3.5 text-[#D9A441] shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>حساب التواصل:</span>
+                  <a
+                    href={`mailto:${DEVELOPER_INFO.email}`}
+                    dir="ltr"
+                    className="font-medium text-[#F2C96B] hover:underline"
+                  >
+                    {DEVELOPER_INFO.email}
+                  </a>
                 </div>
               </div>
 

@@ -435,34 +435,36 @@ export function MenuScreen({
       </main>
 
       {/* Fixed Read-Only Developer Footer (Editable Only by App Owner in Code/Env) */}
-      <footer className="border-t border-white/10 py-6 bg-[#050A18]">
-        <div className="max-w-6xl mx-auto px-5 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#F8F5EE]/60">
+      <footer className="border-t border-white/10 py-5 bg-[#050A18]">
+        <div className="max-w-6xl mx-auto px-5 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2.5 text-xs text-[#F8F5EE]/70">
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
             <span className="font-semibold text-[#F2C96B]">
-              تطوير: {DEVELOPER_INFO.name}
+              تطوير:{' '}
+              <span dir="ltr" className="inline-block tracking-wide">
+                {DEVELOPER_INFO.name}
+              </span>
             </span>
-            <span aria-hidden="true">·</span>
-            <span>{DEVELOPER_INFO.role}</span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">الإصدار {DEVELOPER_INFO.version}</span>
+            <span className="text-[#F8F5EE]/30" aria-hidden="true">
+              ·
+            </span>
+            <span className="text-[#F8F5EE]/50 tabular-nums">
+              الإصدار {DEVELOPER_INFO.version}
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-4">
-            {DEVELOPER_INFO.email && (
-              <a
-                href={`mailto:${DEVELOPER_INFO.email}`}
-                className="inline-flex items-center gap-1.5 text-[#F8F5EE]/70 hover:text-[#F2C96B] transition-colors"
-                dir="ltr"
-              >
-                <Mail className="h-3.5 w-3.5 text-[#D9A441]" aria-hidden="true" />
-                <span>{DEVELOPER_INFO.email}</span>
-              </a>
-            )}
-            {DEVELOPER_INFO.website && (
-              <span className="text-[#F8F5EE]/50" dir="ltr">
-                {DEVELOPER_INFO.website}
-              </span>
-            )}
+          <div className="flex items-center justify-center gap-1.5">
+            <Mail
+              className="h-3.5 w-3.5 text-[#D9A441] shrink-0"
+              aria-hidden="true"
+            />
+            <span className="text-[#F8F5EE]/65">حساب التواصل:</span>
+            <a
+              href={`mailto:${DEVELOPER_INFO.email}`}
+              className="font-medium text-[#F2C96B] hover:underline transition-colors"
+              dir="ltr"
+            >
+              {DEVELOPER_INFO.email}
+            </a>
           </div>
         </div>
       </footer>
