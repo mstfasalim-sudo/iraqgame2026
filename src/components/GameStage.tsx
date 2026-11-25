@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeft,
+  BookOpen,
+  Check,
   CheckCircle2,
   Clock,
   Coins,
@@ -13,6 +16,7 @@ import {
   PlayCircle,
   RefreshCw,
   Scissors,
+  Share2,
   Users,
   Volume2,
   VolumeX,
@@ -38,6 +42,7 @@ import {
   formatCoins,
   formatDinar,
   getCoinsForLevel,
+  getPointsForDifficulty,
   getSafeHavenPrize,
 } from '../types/game';
 import {
@@ -46,10 +51,18 @@ import {
   simulateAudiencePoll,
   simulatePhoneFriend,
 } from '../utils/gameLogic';
+import { preloadInterstitial } from '../utils/ads';
+import {
+  triggerAnswerTapHaptic,
+  triggerCorrectHaptic,
+  triggerWrongHaptic,
+} from '../utils/haptics';
+import { shareWisdom } from '../utils/share';
 import { soundEngine } from '../utils/sound';
 import { AdBannerSlot } from './AdBannerSlot';
 import { LifelinePanels } from './LifelinePanels';
 import { PrizeLadder } from './PrizeLadder';
+import { StudioStageBackdrop } from './StudioStageBackdrop';
 
 interface GameStageProps {
   mode: GameMode;
@@ -59,13 +72,14 @@ interface GameStageProps {
   onToggleMusic: () => void;
   onSpendCoins: (amount: number) => boolean;
   onRequestAdReward: (request: AdRewardRequest) => void;
+  onTriggerStageInterstitial: (onContinue: () => void) => void;
+  onCorrectAnswer?: (pointsEarned: number) => void;
+  onNotify?: (message: string) => void;
   onExitToMenu: () => void;
   onFinishGame: (outcome: GameOutcome) => void;
 }
 
 type QuestionPhase = 'ANSWERING' | 'LOCKED' | 'REVEALED';
-
-const STUDIO_BG = '/src/assets/images/studio_backdrop_1795522141754.jpg';
 
 const LIFELINE_LABELS: Record<LifelineKey, string> = {
   fiftyFifty: 'حذف إجابتين',
@@ -90,6 +104,9 @@ export function GameStage({
   onToggleMusic,
   onSpendCoins,
   onRequestAdReward,
+  onTriggerStageInterstitial,
+  onCorrectAnswer,
+  onNotify,
   onExitToMenu,
   onFinishGame,
 }: GameStageProps) {
@@ -118,12 +135,14 @@ export function GameStage({
   const [rechargePrompt, setRechargePrompt] = useState<LifelineKey | null>(null);
   const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
   const [showMobileLadder, setShowMobileLadder] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const usedIdsRef = useRef<Set<string>>(
     new Set(deckState.deck.map((q) => q.id))
   );
   const revealTimeoutRef = useRef<number | null>(null);
   const dialTimeoutRef = useRef<number | null>(null);
+  const isAdvancingRef = useRef(false);
 
   const currentQuestion: QuizQuestion = deckState.deck[questionIndex];
   const currentLevel = questionIndex + 1;
@@ -148,10 +167,11 @@ export function GameStage({
     return MOTIVATIONAL_PHRASES[questionIndex % MOTIVATIONAL_PHRASES.length];
   }, [currentLevel, questionIndex]);
 
-  // Start / stop interactive studio background music
+  // Start / stop interactive studio background music & preload next interstitial ad
   useEffect(() => {
     soundEngine.startStudioMusic(currentQuestion.difficulty);
     soundEngine.playQuestionIntro();
+    preloadInterstitial().catch(() => {});
     return () => {
       soundEngine.stopStudioMusic();
       if (revealTimeoutRef.current) window.clearTimeout(revealTimeoutRef.current);
@@ -173,6 +193,7 @@ export function GameStage({
     setTimedOut(true);
     setPhase('REVEALED');
     setRechargePrompt(null);
+    triggerWrongHaptic();
     soundEngine.playWrong();
     setHistory((prev) => [
       ...prev,
@@ -238,21 +259,32 @@ export function GameStage({
         ]);
 
         if (isCorrect) {
+          triggerCorrectHaptic();
+          onCorrectAnswer?.(getPointsForDifficulty(currentQuestion.difficulty));
           if (currentLevel === 15) {
             soundEngine.playGrandVictory();
           } else {
             soundEngine.playCorrect(currentLevel === 5 || currentLevel === 10);
           }
         } else {
+          triggerWrongHaptic();
           soundEngine.playWrong();
         }
       }, delayMs);
     },
-    [phase, eliminatedOptions, isInstantMode, currentQuestion, currentLevel]
+    [
+      phase,
+      eliminatedOptions,
+      isInstantMode,
+      currentQuestion,
+      currentLevel,
+      onCorrectAnswer,
+    ]
   );
 
   const handleOptionClick = (idx: number) => {
     if (phase !== 'ANSWERING' || eliminatedOptions.includes(idx)) return;
+    triggerAnswerTapHaptic();
     if (isInstantMode) {
       soundEngine.playClick();
       confirmAnswer(idx);
@@ -303,7 +335,8 @@ export function GameStage({
   };
 
   const handleNextStep = useCallback(() => {
-    if (phase !== 'REVEALED') return;
+    if (phase !== 'REVEALED' || isAdvancingRef.current) return;
+    isAdvancingRef.current = true;
     soundEngine.playClick();
 
     const wasCorrect =
@@ -325,17 +358,29 @@ export function GameStage({
         return;
       }
 
-      setQuestionIndex((prev) => prev + 1);
-      setPhase('ANSWERING');
-      setSelectedOption(null);
-      setEliminatedOptions([]);
-      setAudiencePoll(null);
-      setPhoneFriend(null);
-      setPhoneDialing(false);
-      setRechargePrompt(null);
-      setSecondsLeft(QUESTION_TIMER_SECONDS);
-      setTimedOut(false);
-      soundEngine.playQuestionIntro();
+      const advanceToNextQuestion = () => {
+        isAdvancingRef.current = false;
+        setQuestionIndex((prev) => prev + 1);
+        setPhase('ANSWERING');
+        setSelectedOption(null);
+        setEliminatedOptions([]);
+        setAudiencePoll(null);
+        setPhoneFriend(null);
+        setPhoneDialing(false);
+        setRechargePrompt(null);
+        setShareCopied(false);
+        setSecondsLeft(QUESTION_TIMER_SECONDS);
+        setTimedOut(false);
+        soundEngine.playQuestionIntro();
+      };
+
+      // Show a full-screen interstitial automatically after every 3 completed stages
+      if (currentLevel % 3 === 0) {
+        soundEngine.stopStudioMusic();
+        onTriggerStageInterstitial(advanceToNextQuestion);
+      } else {
+        advanceToNextQuestion();
+      }
     } else {
       soundEngine.stopStudioMusic();
       const safePrize = getSafeHavenPrize(questionIndex);
@@ -357,6 +402,7 @@ export function GameStage({
     currentQuestion.correctIndex,
     currentLevel,
     onFinishGame,
+    onTriggerStageInterstitial,
     history,
     lifelinesUsedCount,
     mode,
@@ -492,6 +538,24 @@ export function GameStage({
     selectedOption === currentQuestion.correctIndex;
 
   const canRevive = phase === 'REVEALED' && !isAnswerCorrect && !reviveUsed;
+
+  const handleShareWisdom = async () => {
+    soundEngine.playClick();
+    triggerAnswerTapHaptic();
+    const result = await shareWisdom({
+      question: currentQuestion.question,
+      proverbText: currentQuestion.proverbText,
+      explanation: currentQuestion.explanation,
+    });
+    if (result === 'copied') {
+      setShareCopied(true);
+      onNotify?.('تم نسخ الحكمة جاهزة للمشاركة');
+      window.setTimeout(() => setShareCopied(false), 2200);
+    } else if (result === 'shared') {
+      onNotify?.('تمت مشاركة الحكمة بنجاح');
+    }
+  };
+
   const timerPct = Math.max(
     0,
     Math.min(100, (secondsLeft / QUESTION_TIMER_SECONDS) * 100)
@@ -499,23 +563,18 @@ export function GameStage({
   const timerUrgent = secondsLeft <= 8 && phase === 'ANSWERING';
 
   return (
-    <div className="min-h-screen bg-[#060D1F] text-[#F8F5EE] relative flex flex-col">
-      {/* Subtle Broadcast Backdrop */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <img
-          src={STUDIO_BG}
-          alt=""
-          aria-hidden="true"
-          referrerPolicy="no-referrer"
-          className="w-full h-full object-cover opacity-20"
-        />
-        <div className="absolute inset-0 bg-gradient-to-b from-[#060D1F]/80 via-[#060D1F]/92 to-[#060D1F]" />
-      </div>
+    <div className="h-[100dvh] max-h-[100dvh] overflow-hidden bg-[#060D1F] text-[#F8F5EE] relative flex flex-col">
+      {/* Dynamic Progress-Driven Animated Studio Backdrop */}
+      <StudioStageBackdrop
+        level={currentLevel}
+        celebrating={isAnswerCorrect}
+      />
 
-      {/* Compact Studio Top HUD */}
-      <header className="relative z-20 border-b border-white/10 bg-[#060D1F]/88 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
+      {/* 1. Compact Single-Row Top HUD (Question #, Prize/Points, Timer & Controls) */}
+      <header className="relative z-20 shrink-0 border-b border-white/10 bg-[#060D1F]/90 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-2.5 sm:px-6 h-12 sm:h-14 flex items-center justify-between gap-1.5 sm:gap-3">
+          {/* Right cluster (RTL start): Home + Question # + Prize/Points */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => {
@@ -523,49 +582,69 @@ export function GameStage({
                 soundEngine.stopStudioMusic();
                 onExitToMenu();
               }}
-              className="inline-flex items-center gap-1.5 text-sm text-[#F8F5EE]/75 hover:text-[#F8F5EE] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              aria-label="العودة للرئيسية"
+              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg border border-white/10 bg-[#0D1938]/90 text-[#F8F5EE]/80 hover:text-[#F8F5EE] inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
             >
-              <Home className="h-4 w-4" aria-hidden="true" />
-              <span className="hidden sm:inline">الرئيسية</span>
+              <Home className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden="true" />
+              <span className="hidden md:inline text-xs font-medium">الرئيسية</span>
             </button>
-            <span className="text-white/15 hidden sm:inline" aria-hidden="true">
-              |
-            </span>
-            <span className="font-display text-lg sm:text-xl font-bold text-[#F2C96B] truncate">
-              {profile.name}
-            </span>
-          </div>
 
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-            <div className="hidden md:flex items-center gap-1.5 text-xs font-semibold text-[#F2C96B] tabular-nums ml-1">
-              <Coins className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{formatCoins(profile.coins)}</span>
+            {/* Question Number */}
+            <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/8 border border-white/10 text-[11px] sm:text-xs font-bold text-[#F8F5EE] tabular-nums whitespace-nowrap shrink-0">
+              <span>س {currentLevel}/15</span>
             </div>
 
-            {/* Mandatory 25s Countdown Readout */}
-            <div
-              aria-label={`الوقت المتبقي ${secondsLeft} ثانية من ${QUESTION_TIMER_SECONDS}`}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs sm:text-sm font-bold tabular-nums whitespace-nowrap shrink-0 transition-colors ${
-                timerUrgent
-                  ? 'border-red-500/70 bg-red-500/20 text-red-200'
-                  : 'border-[#D9A441]/35 bg-[#0D1938] text-[#F8F5EE]'
-              }`}
-            >
-              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{secondsLeft} ث</span>
-            </div>
-
+            {/* Prize / Points (tappable on mobile to view Prize Ladder) */}
             <button
               type="button"
               onClick={() => {
                 soundEngine.playClick();
                 setShowMobileLadder(true);
               }}
-              className="lg:hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D9A441]/30 bg-[#0D1938] text-xs font-medium text-[#F2C96B] whitespace-nowrap shrink-0 cursor-pointer"
+              title="سلم الجوائز"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-[#D9A441]/35 bg-[#0D1938] text-[11px] sm:text-xs font-bold text-[#F2C96B] tabular-nums whitespace-nowrap shrink-0 cursor-pointer lg:cursor-default"
             >
-              <Layers className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="tabular-nums">{formatDinar(currentStepPrize)}</span>
+              <Layers className="h-3 w-3 sm:h-3.5 sm:w-3.5 lg:hidden shrink-0" aria-hidden="true" />
+              <Coins className="h-3.5 w-3.5 hidden lg:inline shrink-0" aria-hidden="true" />
+              <span>{formatDinar(currentStepPrize)}</span>
             </button>
+
+            <div className="hidden lg:flex items-center gap-1 text-xs font-semibold text-[#F8F5EE]/70 tabular-nums whitespace-nowrap shrink-0">
+              <span aria-hidden="true">·</span>
+              <span>{formatCoins(profile.coins)}</span>
+            </div>
+          </div>
+
+          {/* Left cluster (RTL end): Timer + Withdraw + Audio toggles */}
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+            {/* Compact 25s Countdown Readout */}
+            <div
+              aria-label={`الوقت المتبقي ${secondsLeft} ثانية من ${QUESTION_TIMER_SECONDS}`}
+              className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg border text-[11px] sm:text-xs font-bold tabular-nums whitespace-nowrap shrink-0 transition-colors ${
+                timerUrgent
+                  ? 'border-red-500/75 bg-red-500/25 text-red-200'
+                  : 'border-[#D9A441]/35 bg-[#0D1938] text-[#F8F5EE]'
+              }`}
+            >
+              <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5" aria-hidden="true" />
+              <span>{secondsLeft}ث</span>
+            </div>
+
+            {phase === 'ANSWERING' && currentEarnedPrize > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playClick();
+                  setShowWithdrawConfirm(true);
+                }}
+                aria-label="انسحاب"
+                title="انسحاب والاحتفاظ بالرصيد"
+                className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg border border-[#D9A441]/40 text-[11px] sm:text-xs font-semibold text-[#F2C96B] hover:bg-[#D9A441]/15 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <LogOut className="h-3 w-3 sm:h-3.5 sm:w-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">انسحاب</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -578,18 +657,13 @@ export function GameStage({
                   ? 'إيقاف موسيقى الاستوديو'
                   : 'تشغيل موسيقى الاستوديو'
               }
-              title={
-                settings.musicEnabled
-                  ? 'إيقاف موسيقى الاستوديو'
-                  : 'تشغيل موسيقى الاستوديو'
-              }
-              className={`p-2 rounded-lg border transition-colors cursor-pointer ${
+              className={`p-1.5 rounded-lg border cursor-pointer ${
                 settings.musicEnabled
                   ? 'border-[#D9A441]/40 bg-[#D9A441]/15 text-[#F2C96B]'
                   : 'border-white/15 bg-[#0D1938] text-[#F8F5EE]/45 hover:text-[#F8F5EE]'
               }`}
             >
-              <Music className="h-4 w-4" />
+              <Music className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </button>
 
             <button
@@ -602,458 +676,269 @@ export function GameStage({
                   ? 'كتم المؤثرات والتصفيق'
                   : 'تشغيل المؤثرات والتصفيق'
               }
-              title={
-                settings.soundEnabled
-                  ? 'كتم المؤثرات والتصفيق'
-                  : 'تشغيل المؤثرات والتصفيق'
-              }
-              className="p-2 rounded-lg border border-white/15 bg-[#0D1938] text-[#F8F5EE]/80 hover:text-[#F8F5EE] transition-colors cursor-pointer"
+              className="p-1.5 rounded-lg border border-white/15 bg-[#0D1938] text-[#F8F5EE]/80 hover:text-[#F8F5EE] cursor-pointer"
             >
               {settings.soundEnabled ? (
-                <Volume2 className="h-4 w-4" />
+                <Volume2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               ) : (
-                <VolumeX className="h-4 w-4" />
+                <VolumeX className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               )}
             </button>
-
-            {phase === 'ANSWERING' && currentEarnedPrize > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.playClick();
-                  setShowWithdrawConfirm(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D9A441]/40 text-xs font-medium text-[#F2C96B] hover:bg-[#D9A441]/15 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>انسحاب</span>
-              </button>
-            )}
           </div>
+        </div>
+
+        {/* Sleek Full-Width 25s Countdown Progress Line */}
+        <div className="w-full h-1 bg-white/10 overflow-hidden">
+          <div
+            className={`h-full transition-all duration-300 ${
+              timerUrgent ? 'bg-red-500' : 'bg-[#D9A441]'
+            }`}
+            style={{ width: `${timerPct}%` }}
+          />
         </div>
       </header>
 
-      {/* Main Broadcast Layout */}
-      <main className="relative z-10 flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 lg:py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* Primary Quiz Stage */}
-          <div className="lg:col-span-9 space-y-5">
-            {/* Clean Metadata & Lifelines */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
-              <div className="flex flex-wrap items-center gap-2 text-sm text-[#F8F5EE]/75">
-                <span className="font-bold text-[#F8F5EE] tabular-nums">
-                  السؤال {currentLevel} / 15
-                </span>
-                <span aria-hidden="true">·</span>
-                <span className="text-[#F2C96B]">{currentQuestion.category}</span>
-                <span aria-hidden="true">·</span>
-                <span className="tabular-nums">
-                  {formatDinar(currentStepPrize)}
-                </span>
+      {/* 2. Centered Compact Question & Options Stage (Zero Vertical Scroll) */}
+      <main className="relative z-10 flex-1 min-h-0 max-w-7xl w-full mx-auto px-3 sm:px-6 py-2 sm:py-3 flex flex-col lg:grid lg:grid-cols-12 lg:gap-6 lg:items-center overflow-hidden">
+        {/* Primary Quiz Column */}
+        <div className="flex-1 min-h-0 lg:col-span-9 flex flex-col justify-center gap-2 sm:gap-3.5 w-full">
+          {/* Smooth Fade & Slide Question + Options Stage */}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentQuestion.id}
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.45, ease: 'easeInOut' }}
+              className="flex flex-col gap-2 sm:gap-3.5"
+            >
+              {/* Compact Studio Question Card */}
+              <div className="p-[1.5px] bg-gradient-to-r from-[#D9A441]/30 via-[#F2C96B]/70 to-[#D9A441]/30 studio-frame shrink-0">
+                <div className="bg-[#0C1838]/95 px-4 sm:px-9 py-2.5 sm:py-5 text-center studio-frame min-h-[70px] sm:min-h-[112px] flex flex-col items-center justify-center gap-0.5 sm:gap-1">
+                  <span className="text-[11px] sm:text-xs font-semibold text-[#F2C96B]/85 tracking-wide">
+                    {currentQuestion.category}
+                  </span>
+                  <h1 className="font-display text-[15px] sm:text-2xl lg:text-[26px] font-bold text-[#F8F5EE] leading-snug sm:leading-[1.4] [text-wrap:balance] max-w-3xl">
+                    {currentQuestion.question}
+                  </h1>
+                </div>
               </div>
 
-              <div
-                className="flex flex-wrap items-center gap-2"
-                role="group"
-                aria-label="وسائل المساعدة"
-              >
-                {(
-                  [
-                    { key: 'fiftyFifty', label: 'حذف إجابتين', Icon: Scissors },
-                    { key: 'audience', label: 'الجمهور', Icon: Users },
-                    { key: 'phoneFriend', label: 'صديق', Icon: PhoneCall },
-                    { key: 'swapQuestion', label: 'تبديل', Icon: RefreshCw },
-                  ] as const
-                ).map(({ key, label, Icon }) => {
-                  const available = lifelines[key];
+              {/* Tightly Stacked 4 Answer Options with Smooth 500ms Color Transition */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-3">
+                {currentQuestion.options.map((optionText, idx) => {
+                  const isEliminated = eliminatedOptions.includes(idx);
+                  const isSelected = selectedOption === idx;
+                  const isCorrectOption = idx === currentQuestion.correctIndex;
+
+                  let borderClass =
+                    'from-[#D9A441]/25 via-[#D9A441]/45 to-[#D9A441]/25';
+                  let innerClass =
+                    'bg-[#0B1530] hover:bg-[#13244E] text-[#F8F5EE]';
+                  let letterClass = 'text-[#F2C96B]';
+                  let stateLabel: string | null = null;
+
+                  const isRevealedCorrect =
+                    phase === 'REVEALED' &&
+                    isCorrectOption &&
+                    (isAnswerCorrect || !canRevive);
+
+                  if (isEliminated) {
+                    borderClass = 'from-white/5 via-white/10 to-white/5';
+                    innerClass = 'bg-[#070E22]/60 text-[#F8F5EE]/20';
+                    letterClass = 'text-[#F8F5EE]/20';
+                  } else if (phase === 'REVEALED') {
+                    if (isRevealedCorrect) {
+                      borderClass =
+                        'from-[#FFE08A] via-[#F2C96B] to-[#D9A441]';
+                      innerClass =
+                        'bg-gradient-to-r from-emerald-800/95 via-emerald-700/95 to-[#8A6619]/95 text-[#FFFDF5] font-bold';
+                      letterClass = 'text-[#FFE08A]';
+                      stateLabel = 'صحيح';
+                    } else if (isSelected && !isCorrectOption) {
+                      borderClass = 'from-red-500 via-red-400 to-red-500';
+                      innerClass = 'bg-red-800/90 text-white';
+                      letterClass = 'text-red-200';
+                      stateLabel = 'خطأ';
+                    } else {
+                      borderClass = 'from-white/10 via-white/15 to-white/10';
+                      innerClass = 'bg-[#091229]/80 text-[#F8F5EE]/50';
+                      letterClass = 'text-[#F8F5EE]/40';
+                    }
+                  } else if (isSelected) {
+                    borderClass = 'from-[#F2C96B] via-[#FFE094] to-[#F2C96B]';
+                    innerClass = 'bg-[#D9A441] text-[#060D1F] font-bold';
+                    letterClass = 'text-[#060D1F]';
+                    stateLabel = phase === 'LOCKED' ? 'جاري التحقق...' : 'مختار';
+                  }
+
                   return (
                     <button
-                      key={key}
+                      key={`${currentQuestion.id}-${idx}`}
                       type="button"
-                      disabled={phase !== 'ANSWERING'}
-                      onClick={() => triggerLifeline(key)}
-                      title={
-                        available
-                          ? label
-                          : `اضغط لاستعادة ${label} عبر إعلان أو عملات`
-                      }
-                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                        phase !== 'ANSWERING'
-                          ? 'border-white/10 bg-white/5 text-[#F8F5EE]/30 cursor-not-allowed'
-                          : available
-                            ? 'border-[#D9A441]/40 bg-[#0E1C3F] text-[#F8F5EE] hover:bg-[#D9A441] hover:text-[#060D1F] cursor-pointer'
-                            : 'border-dashed border-[#D9A441]/35 bg-[#0A132C] text-[#F2C96B]/75 hover:border-[#F2C96B] cursor-pointer'
+                      disabled={phase !== 'ANSWERING' || isEliminated}
+                      onClick={() => handleOptionClick(idx)}
+                      className={`group text-right p-[1.5px] bg-gradient-to-r ${borderClass} studio-frame transition-all duration-500 ease-in-out focus-visible:outline-2 focus-visible:outline-[#F2C96B] ${
+                        isRevealedCorrect ? 'correct-golden-pulse z-10' : ''
+                      } ${
+                        phase === 'ANSWERING' && !isEliminated
+                          ? 'cursor-pointer active:scale-[0.975]'
+                          : 'cursor-default'
                       }`}
                     >
-                      <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>{available ? label : `شحن ${label}`}</span>
+                      <div
+                        className={`${innerClass} studio-frame px-4 sm:px-7 py-2 sm:py-3.5 min-h-[42px] sm:min-h-[56px] flex items-center justify-between gap-2.5 transition-all duration-500 ease-in-out`}
+                      >
+                        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+                          <span
+                            className={`font-bold text-sm sm:text-lg shrink-0 transition-colors duration-500 ease-in-out ${letterClass}`}
+                          >
+                            {OPTION_LETTERS[idx]}:
+                          </span>
+                          <span
+                            className={`text-sm sm:text-lg font-medium leading-tight sm:leading-snug transition-colors duration-500 ease-in-out ${
+                              isEliminated ? 'line-through opacity-35' : ''
+                            }`}
+                          >
+                            {optionText}
+                          </span>
+                        </div>
+
+                        {stateLabel && (
+                          <span
+                            className={`text-[11px] sm:text-xs font-semibold shrink-0 whitespace-nowrap transition-opacity duration-500 ease-in-out ${
+                              phase === 'REVEALED'
+                                ? 'text-white/95'
+                                : 'text-[#060D1F]/80'
+                            }`}
+                          >
+                            {stateLabel}
+                          </span>
+                        )}
+                      </div>
                     </button>
                   );
                 })}
               </div>
-            </div>
+            </motion.div>
+          </AnimatePresence>
 
-            {/* Lifeline Recharge Inline Prompt */}
-            {rechargePrompt && phase === 'ANSWERING' && (
-              <div className="bg-[#0F1C3D] border border-[#D9A441]/40 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-bold text-[#F2C96B]">
-                    استعادة وسيلة «{LIFELINE_LABELS[rechargePrompt]}»
-                  </div>
-                  <p className="text-xs text-[#F8F5EE]/70 mt-0.5">
-                    شاهد إعلاناً قصيراً (5 ثوانٍ) مجاناً أو استخدم{' '}
-                    {COIN_COSTS.restoreLifeline} عملة من رصيدك.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.playClick();
-                      onRequestAdReward({
-                        kind: 'restore_lifeline',
-                        title: `استعادة وسيلة ${LIFELINE_LABELS[rechargePrompt]}`,
-                        rewardLabel: `إعادة تفعيل ${LIFELINE_LABELS[rechargePrompt]}`,
-                        lifelineKey: rechargePrompt,
-                        onComplete: () => restoreLifeline(rechargePrompt),
-                      });
-                    }}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-[#D9A441] hover:bg-[#F2C96B] text-[#060D1F] transition-colors whitespace-nowrap cursor-pointer"
-                  >
-                    <PlayCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>استعادة بإعلان</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={profile.coins < COIN_COSTS.restoreLifeline}
-                    onClick={() => {
-                      soundEngine.playClick();
-                      if (onSpendCoins(COIN_COSTS.restoreLifeline)) {
-                        restoreLifeline(rechargePrompt);
-                      }
-                    }}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                      profile.coins >= COIN_COSTS.restoreLifeline
-                        ? 'bg-white/12 hover:bg-white/20 text-[#F8F5EE] cursor-pointer'
-                        : 'bg-white/5 text-[#F8F5EE]/35 cursor-not-allowed'
-                    }`}
-                  >
-                    <Coins
-                      className="h-3.5 w-3.5 text-[#F2C96B]"
-                      aria-hidden="true"
-                    />
-                    <span>{COIN_COSTS.restoreLifeline} عملة</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.playClick();
-                      setRechargePrompt(null);
-                    }}
-                    aria-label="إغلاق"
-                    className="p-1.5 text-[#F8F5EE]/60 hover:text-[#F8F5EE] cursor-pointer"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Audience Poll / Phone Friend Output */}
-            <LifelinePanels
-              audiencePoll={audiencePoll}
-              phoneFriend={phoneFriend}
-              phoneDialing={phoneDialing}
-              onDismissAudience={() => {
-                soundEngine.playClick();
-                setAudiencePoll(null);
-              }}
-              onDismissPhone={() => {
-                soundEngine.playClick();
-                setPhoneFriend(null);
-              }}
-            />
-
-            {/* Withdraw Inline Confirmation */}
-            {showWithdrawConfirm && (
-              <div
-                role="dialog"
-                aria-label="تأكيد الانسحاب"
-                className="bg-[#112046] border border-[#D9A441]/45 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-              >
-                <div>
-                  <h3 className="text-base font-bold text-[#F2C96B]">
-                    الانسحاب والاحتفاظ بمبلغ {formatDinar(currentEarnedPrize)}؟
-                  </h3>
-                  <p className="text-xs text-[#F8F5EE]/70 mt-1">
-                    ستغادر الاستوديو بكامل رصيدك المحقق وعملات المرحلة.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.playClick();
-                      setShowWithdrawConfirm(false);
-                    }}
-                    className="px-4 py-2 text-xs font-medium text-[#F8F5EE]/80 bg-white/10 rounded-lg hover:text-[#F8F5EE] whitespace-nowrap cursor-pointer"
-                  >
-                    إكمال اللعب
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleConfirmWithdraw}
-                    className="px-4 py-2 text-xs font-bold text-[#060D1F] bg-[#D9A441] hover:bg-[#F2C96B] rounded-lg whitespace-nowrap cursor-pointer"
-                  >
-                    تأكيد الانسحاب
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Mandatory 25-Second Visual Countdown Bar */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-[#F8F5EE]/60">
-                <span>الوقت الإجباري للسؤال</span>
-                <span
-                  className={`tabular-nums font-semibold ${
-                    timerUrgent ? 'text-red-300' : 'text-[#F2C96B]'
-                  }`}
-                >
-                  {secondsLeft} / {QUESTION_TIMER_SECONDS} ثانية
-                </span>
-              </div>
-              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${
-                    timerUrgent ? 'bg-red-500' : 'bg-[#D9A441]'
-                  }`}
-                  style={{ width: `${timerPct}%` }}
-                />
-              </div>
-            </div>
-
-            {/* Question Box */}
-            <div className="p-[1.5px] bg-gradient-to-r from-[#D9A441]/30 via-[#F2C96B]/70 to-[#D9A441]/30 studio-frame">
-              <div className="bg-[#0C1838] px-7 sm:px-12 py-7 sm:py-9 text-center studio-frame min-h-[136px] flex items-center justify-center">
-                <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#F8F5EE] leading-[1.45] [text-wrap:balance] max-w-3xl">
-                  {currentQuestion.question}
-                </h1>
-              </div>
-            </div>
-
-            {/* 4 Answer Options */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {currentQuestion.options.map((optionText, idx) => {
-                const isEliminated = eliminatedOptions.includes(idx);
-                const isSelected = selectedOption === idx;
-                const isCorrectOption = idx === currentQuestion.correctIndex;
-
-                let borderClass =
-                  'from-[#D9A441]/25 via-[#D9A441]/45 to-[#D9A441]/25';
-                let innerClass =
-                  'bg-[#0B1530] hover:bg-[#13244E] text-[#F8F5EE]';
-                let letterClass = 'text-[#F2C96B]';
-                let stateLabel: string | null = null;
-
-                if (isEliminated) {
-                  borderClass = 'from-white/5 via-white/10 to-white/5';
-                  innerClass = 'bg-[#070E22]/60 text-[#F8F5EE]/20';
-                  letterClass = 'text-[#F8F5EE]/20';
-                } else if (phase === 'REVEALED') {
-                  if (isCorrectOption && (isAnswerCorrect || !canRevive)) {
-                    borderClass =
-                      'from-emerald-400 via-emerald-300 to-emerald-400';
-                    innerClass = 'bg-emerald-700/90 text-white font-semibold';
-                    letterClass = 'text-emerald-200';
-                    stateLabel = 'صحيح';
-                  } else if (isSelected && !isCorrectOption) {
-                    borderClass = 'from-red-500 via-red-400 to-red-500';
-                    innerClass = 'bg-red-800/90 text-white';
-                    letterClass = 'text-red-200';
-                    stateLabel = 'خطأ';
-                  } else {
-                    borderClass = 'from-white/10 via-white/15 to-white/10';
-                    innerClass = 'bg-[#091229]/80 text-[#F8F5EE]/50';
-                    letterClass = 'text-[#F8F5EE]/40';
-                  }
-                } else if (isSelected) {
-                  borderClass = 'from-[#F2C96B] via-[#FFE094] to-[#F2C96B]';
-                  innerClass = 'bg-[#D9A441] text-[#060D1F] font-bold';
-                  letterClass = 'text-[#060D1F]';
-                  stateLabel = phase === 'LOCKED' ? 'جاري التحقق...' : 'مختار';
-                }
-
-                return (
-                  <button
-                    key={`${currentQuestion.id}-${idx}`}
-                    type="button"
-                    disabled={phase !== 'ANSWERING' || isEliminated}
-                    onClick={() => handleOptionClick(idx)}
-                    className={`group text-right p-[1.5px] bg-gradient-to-r ${borderClass} studio-frame transition-transform duration-150 focus-visible:outline-2 focus-visible:outline-[#F2C96B] ${
-                      phase === 'ANSWERING' && !isEliminated
-                        ? 'cursor-pointer active:scale-[0.99]'
-                        : 'cursor-default'
-                    }`}
-                  >
-                    <div
-                      className={`${innerClass} studio-frame px-7 sm:px-8 py-4 min-h-[62px] flex items-center justify-between gap-3 transition-colors duration-150`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <span
-                          className={`font-bold text-base shrink-0 ${letterClass}`}
-                        >
-                          {OPTION_LETTERS[idx]}:
-                        </span>
-                        <span
-                          className={`text-base sm:text-lg leading-snug ${
-                            isEliminated ? 'line-through opacity-35' : ''
-                          }`}
-                        >
-                          {optionText}
-                        </span>
-                      </div>
-
-                      {stateLabel && (
-                        <span
-                          className={`text-xs font-semibold shrink-0 whitespace-nowrap ${
-                            phase === 'REVEALED'
-                              ? 'text-white/95'
-                              : 'text-[#060D1F]/80'
-                          }`}
-                        >
-                          {stateLabel}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Optional Classic Confirmation Bar */}
+          {/* Compact Classic Confirmation Bar (when Classic mode is enabled) */}
+          <AnimatePresence>
             {!isInstantMode &&
               phase === 'ANSWERING' &&
               selectedOption !== null && (
-                <div className="bg-[#0F1C3D] border border-[#D9A441]/40 rounded-xl px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="text-sm text-[#F8F5EE]/90">
+                <motion.div
+                  key="classic-confirm"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  transition={{ duration: 0.4, ease: 'easeInOut' }}
+                  className="bg-[#0F1C3D]/95 border border-[#D9A441]/45 rounded-xl px-3.5 py-2 sm:px-5 sm:py-3 flex items-center justify-between gap-2.5 shrink-0"
+                >
+                  <div className="text-xs sm:text-sm text-[#F8F5EE]/90 truncate">
                     اخترت{' '}
                     <strong className="text-[#F2C96B]">
                       ({OPTION_LETTERS[selectedOption]}){' '}
                       {currentQuestion.options[selectedOption]}
-                    </strong>{' '}
-                    — هل هذا جوابك النهائي؟
+                    </strong>
                   </div>
-                  <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => {
                         soundEngine.playClick();
                         setSelectedOption(null);
                       }}
-                      className="px-4 py-2 text-xs text-[#F8F5EE]/75 hover:text-[#F8F5EE] whitespace-nowrap cursor-pointer"
+                      className="px-2.5 py-1.5 text-xs text-[#F8F5EE]/75 hover:text-[#F8F5EE] whitespace-nowrap cursor-pointer"
                     >
                       تغيير
                     </button>
                     <button
                       type="button"
                       onClick={() => confirmAnswer(selectedOption)}
-                      className="px-6 py-2.5 text-sm font-bold text-[#060D1F] bg-[#D9A441] hover:bg-[#F2C96B] rounded-lg whitespace-nowrap cursor-pointer"
+                      className="px-4 py-1.5 sm:px-5 sm:py-2 text-xs sm:text-sm font-bold text-[#060D1F] bg-[#D9A441] hover:bg-[#F2C96B] rounded-lg whitespace-nowrap cursor-pointer"
                     >
-                      تأكيد الجواب النهائي
+                      تأكيد الجواب
                     </button>
                   </div>
-                </div>
+                </motion.div>
               )}
+          </AnimatePresence>
 
-            {/* Post-Reveal Panel with Motivational Praise & Applause */}
+          {/* Post-Reveal Wisdom / Explanation Card + Manual Next Button (Zero Scrolling) */}
+          <AnimatePresence>
             {phase === 'REVEALED' && (
-              <div
-                className={`rounded-xl border p-5 sm:p-6 space-y-4 ${
+              <motion.div
+                key={`reveal-${currentQuestion.id}`}
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.45, ease: 'easeInOut' }}
+                className={`rounded-2xl border px-3.5 py-2.5 sm:px-5 sm:py-3.5 space-y-2.5 shrink-0 backdrop-blur-md transition-colors duration-500 ease-in-out ${
                   isAnswerCorrect
-                    ? 'bg-emerald-950/45 border-emerald-500/40'
-                    : 'bg-red-950/45 border-red-500/40'
+                    ? 'bg-emerald-950/60 border-emerald-500/45 shadow-[0_10px_30px_-14px_rgba(16,185,129,0.45)]'
+                    : 'bg-red-950/60 border-red-500/45 shadow-[0_10px_30px_-14px_rgba(239,68,68,0.4)]'
                 }`}
               >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="flex items-start gap-2.5">
+                {/* Compact Status Header */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     {isAnswerCorrect ? (
                       <CheckCircle2
-                        className="h-5 w-5 text-emerald-400 shrink-0 mt-0.5"
+                        className="h-4 w-4 sm:h-5 sm:w-5 text-emerald-400 shrink-0"
                         aria-hidden="true"
                       />
                     ) : (
                       <XCircle
-                        className="h-5 w-5 text-red-400 shrink-0 mt-0.5"
+                        className="h-4 w-4 sm:h-5 sm:w-5 text-red-400 shrink-0"
                         aria-hidden="true"
                       />
                     )}
-                    <div>
-                      <h2 className="text-base sm:text-lg font-bold text-[#F8F5EE]">
-                        {isAnswerCorrect
-                          ? motivationalPraise
-                          : timedOut
-                            ? 'انتهت الـ 25 ثانية المحددة للسؤال'
-                            : canRevive
-                              ? 'إجابة خاطئة! هل تريد فرصة ثانية لإكمال الجولة؟'
-                              : 'إجابة خاطئة — انتهت الجولة هنا'}
-                      </h2>
-                      {isAnswerCorrect && currentLevel < 15 && (
-                        <p className="text-xs text-emerald-300/90 mt-0.5 tabular-nums">
-                          ارتفع رصيدك الآن إلى {formatDinar(currentStepPrize)}
-                        </p>
-                      )}
-                    </div>
+                    <h2 className="text-xs sm:text-base font-bold text-[#F8F5EE] truncate">
+                      {isAnswerCorrect
+                        ? motivationalPraise
+                        : timedOut
+                          ? 'انتهى الوقت المحدد للسؤال'
+                          : canRevive
+                            ? 'إجابة خاطئة! هل تريد فرصة ثانية؟'
+                            : 'إجابة خاطئة — انتهت الجولة'}
+                    </h2>
                   </div>
 
-                  {isAnswerCorrect || !canRevive ? (
-                    <button
-                      type="button"
-                      onClick={handleNextStep}
-                      className="inline-flex items-center justify-center gap-2 px-6 py-2.5 text-sm font-bold text-[#060D1F] bg-[#D9A441] hover:bg-[#F2C96B] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <span>
-                        {isAnswerCorrect
-                          ? currentLevel === 15
-                            ? 'استلم جائزة المليون'
-                            : 'السؤال التالي'
-                          : 'عرض النتيجة النهائية'}
-                      </span>
-                      <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  ) : null}
+                  {isAnswerCorrect && (
+                    <span className="text-[11px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-400/25 px-2 py-0.5 rounded-md tabular-nums whitespace-nowrap shrink-0">
+                      {formatDinar(currentStepPrize)}
+                    </span>
+                  )}
                 </div>
 
-                {/* Second Chance Offer */}
-                {canRevive && (
-                  <div className="pt-3 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="flex items-center gap-2 text-xs sm:text-sm text-[#F8F5EE]/80">
+                {/* Second Chance Offer (shown before spoiling answer if revive is available) */}
+                {canRevive ? (
+                  <div className="pt-2 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+                    <div className="hidden sm:flex items-center gap-1.5 text-xs text-[#F8F5EE]/85">
                       <HeartHandshake
                         className="h-4 w-4 text-[#F2C96B] shrink-0"
                         aria-hidden="true"
                       />
-                      <span>
-                        احذف الخيار الخاطئ واحصل على 25 ثانية جديدة لإكمال السؤال (مرة واحدة في الجولة).
-                      </span>
+                      <span>أكمل نفس السؤال بفرصة ثانية</span>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                    <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
                       <button
                         type="button"
                         onClick={handleReviveWithAd}
-                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-xs sm:text-sm font-bold bg-[#D9A441] hover:bg-[#F2C96B] text-[#060D1F] transition-colors whitespace-nowrap cursor-pointer"
+                        className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-[#D9A441] hover:bg-[#F2C96B] text-[#060D1F] whitespace-nowrap cursor-pointer"
                       >
-                        <PlayCircle className="h-4 w-4" aria-hidden="true" />
-                        <span>فرصة ثانية بإعلان</span>
+                        <PlayCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>فرصة بإعلان</span>
                       </button>
 
                       <button
                         type="button"
                         disabled={profile.coins < COIN_COSTS.revive}
                         onClick={handleReviveWithCoins}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+                        className={`inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap ${
                           profile.coins >= COIN_COSTS.revive
                             ? 'bg-white/15 hover:bg-white/20 text-[#F8F5EE] cursor-pointer'
                             : 'bg-white/5 text-[#F8F5EE]/35 cursor-not-allowed'
@@ -1063,78 +948,396 @@ export function GameStage({
                           className="h-3.5 w-3.5 text-[#F2C96B]"
                           aria-hidden="true"
                         />
-                        <span>{COIN_COSTS.revive} عملة</span>
+                        <span>{COIN_COSTS.revive}</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={handleNextStep}
-                        className="px-3.5 py-2.5 text-xs text-[#F8F5EE]/70 hover:text-[#F8F5EE] transition-colors whitespace-nowrap cursor-pointer"
+                        className="px-3 py-2 text-xs font-semibold text-[#F8F5EE]/80 hover:text-[#F8F5EE] bg-white/8 rounded-xl whitespace-nowrap cursor-pointer"
                       >
                         إنهاء الجولة
                       </button>
                     </div>
                   </div>
-                )}
+                ) : (
+                  <>
+                    {/* Readable Wisdom & Cultural Explanation Box with Share Button */}
+                    <div className="rounded-xl bg-[#07112A]/85 border border-[#D9A441]/25 px-3 py-2 sm:px-4 sm:py-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-[#F2C96B] min-w-0">
+                          <BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          <span className="truncate">
+                            {currentQuestion.proverbText
+                              ? `الحكمة والمثل: «${currentQuestion.proverbText}»`
+                              : 'تفسير وحكمة الإجابة'}
+                          </span>
+                        </div>
 
-                {/* Cultural Explanation */}
-                {(isAnswerCorrect || !canRevive) && (
-                  <div className="pt-3 border-t border-white/10 space-y-1">
-                    {currentQuestion.proverbText && (
-                      <p className="font-display text-lg font-bold text-[#F2C96B]">
-                        المثل الكامل: «{currentQuestion.proverbText}»
+                        <button
+                          type="button"
+                          onClick={handleShareWisdom}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer ${
+                            shareCopied
+                              ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200'
+                              : 'border-[#D9A441]/45 bg-[#D9A441]/15 text-[#F2C96B] hover:bg-[#D9A441]/25'
+                          }`}
+                        >
+                          {shareCopied ? (
+                            <>
+                              <Check className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              <span>تم النسخ</span>
+                            </>
+                          ) : (
+                            <>
+                              <Share2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              <span>شارك الحكمة 📤</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <p className="text-xs sm:text-sm text-[#F8F5EE]/92 leading-relaxed max-h-[58px] sm:max-h-[82px] overflow-y-auto">
+                        {currentQuestion.explanation}
                       </p>
-                    )}
-                    <p className="text-sm text-[#F8F5EE]/85 leading-relaxed">
-                      {currentQuestion.explanation}
-                    </p>
-                  </div>
+                    </div>
+
+                    {/* Prominent Manual Next / End Round Button Directly Below Wisdom */}
+                    <button
+                      type="button"
+                      onClick={handleNextStep}
+                      className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:py-3 text-sm sm:text-base font-bold text-[#060D1F] bg-gradient-to-l from-[#D9A441] via-[#F2C96B] to-[#D9A441] hover:brightness-105 rounded-xl shadow-[0_6px_22px_-6px_rgba(217,164,65,0.6)] whitespace-nowrap cursor-pointer"
+                    >
+                      <span>
+                        {isAnswerCorrect && currentLevel < 15
+                          ? 'السؤال التالي'
+                          : 'إنهاء الجولة'}
+                      </span>
+                      <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+                    </button>
+                  </>
                 )}
-              </div>
+              </motion.div>
             )}
+          </AnimatePresence>
+        </div>
 
-            {/* Compact Non-Intrusive Gameplay Banner Ad */}
-            <div className="pt-2">
-              <AdBannerSlot placement="game" compact />
-            </div>
-          </div>
-
-          {/* Desktop Prize Ladder */}
-          <div className="hidden lg:block lg:col-span-3">
-            <PrizeLadder
-              currentLevel={currentLevel}
-              clearedLevel={clearedLevel}
-            />
-          </div>
+        {/* Desktop Prize Ladder */}
+        <div className="hidden lg:block lg:col-span-3 h-full max-h-[580px]">
+          <PrizeLadder
+            currentLevel={currentLevel}
+            clearedLevel={clearedLevel}
+          />
         </div>
       </main>
 
-      {/* Mobile Prize Ladder Drawer */}
-      {showMobileLadder && (
-        <div
-          className="fixed inset-0 z-50 lg:hidden bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
-          role="dialog"
-          aria-label="سلم الجوائز"
-        >
-          <div className="w-full max-w-sm relative">
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.playClick();
-                setShowMobileLadder(false);
-              }}
-              aria-label="إغلاق سلم الجوائز"
-              className="absolute left-3 top-3 z-10 p-2 rounded-lg bg-white/10 text-[#F8F5EE] hover:bg-white/20 cursor-pointer"
-            >
-              <X className="h-4 w-4" />
-            </button>
-            <PrizeLadder
-              currentLevel={currentLevel}
-              clearedLevel={clearedLevel}
-            />
+      {/* 3. Fixed Thumb-Friendly Bottom Lifelines Bar + Banner Ad Dock */}
+      <footer className="relative z-20 shrink-0 border-t border-white/10 bg-[#071028]/95 backdrop-blur-md pb-[env(safe-area-inset-bottom)]">
+        <div className="max-w-7xl mx-auto px-2.5 sm:px-6 pt-2 pb-1.5 sm:py-2 space-y-1.5">
+          {/* Single Horizontal Row of 4 Lifelines (Thumb-Reachable) */}
+          <div
+            className="grid grid-cols-4 gap-1.5 sm:gap-3 max-w-3xl mx-auto"
+            role="group"
+            aria-label="وسائل المساعدة"
+          >
+            {(
+              [
+                {
+                  key: 'fiftyFifty',
+                  shortLabel: 'حذف 2',
+                  label: 'حذف إجابتين',
+                  Icon: Scissors,
+                },
+                {
+                  key: 'audience',
+                  shortLabel: 'الجمهور',
+                  label: 'الجمهور',
+                  Icon: Users,
+                },
+                {
+                  key: 'phoneFriend',
+                  shortLabel: 'صديق',
+                  label: 'صديق',
+                  Icon: PhoneCall,
+                },
+                {
+                  key: 'swapQuestion',
+                  shortLabel: 'تبديل',
+                  label: 'تبديل',
+                  Icon: RefreshCw,
+                },
+              ] as const
+            ).map(({ key, shortLabel, label, Icon }) => {
+              const available = lifelines[key];
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  disabled={phase !== 'ANSWERING'}
+                  onClick={() => triggerLifeline(key)}
+                  title={
+                    available
+                      ? label
+                      : `اضغط لاستعادة ${label} عبر إعلان أو عملات`
+                  }
+                  className={`flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-2 py-1.5 sm:py-2 px-1 sm:px-3 rounded-xl border text-[11px] sm:text-xs font-semibold whitespace-nowrap ${
+                    phase !== 'ANSWERING'
+                      ? 'border-white/10 bg-white/5 text-[#F8F5EE]/30 cursor-not-allowed'
+                      : available
+                        ? 'border-[#D9A441]/40 bg-[#0E1C3F] text-[#F8F5EE] hover:bg-[#D9A441] hover:text-[#060D1F] cursor-pointer'
+                        : 'border-dashed border-[#D9A441]/35 bg-[#0A132C] text-[#F2C96B]/75 hover:border-[#F2C96B] cursor-pointer'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" aria-hidden="true" />
+                  <span className="sm:hidden truncate">
+                    {available ? shortLabel : `شحن`}
+                  </span>
+                  <span className="hidden sm:inline truncate">
+                    {available ? label : `شحن ${label}`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Compact Non-Intrusive Gameplay Banner Ad Underneath Lifelines */}
+          <div className="max-w-3xl mx-auto">
+            <AdBannerSlot placement="game" compact />
           </div>
         </div>
-      )}
+      </footer>
+
+      {/* Floating Overlays (Audience Poll, Phone Friend, Lifeline Recharge, Withdraw Confirm) so stage never scrolls */}
+      <AnimatePresence>
+        {(audiencePoll || phoneFriend || phoneDialing) && (
+          <motion.div
+            key="lifeline-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: 'easeInOut' }}
+            className="fixed inset-0 z-40 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4"
+            onClick={() => {
+              if (!phoneDialing) {
+                soundEngine.playClick();
+                setAudiencePoll(null);
+                setPhoneFriend(null);
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 18, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.97 }}
+              transition={{ duration: 0.4, ease: 'easeInOut' }}
+              className="w-full max-w-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <LifelinePanels
+                audiencePoll={audiencePoll}
+                phoneFriend={phoneFriend}
+                phoneDialing={phoneDialing}
+                onDismissAudience={() => {
+                  soundEngine.playClick();
+                  setAudiencePoll(null);
+                }}
+                onDismissPhone={() => {
+                  soundEngine.playClick();
+                  setPhoneFriend(null);
+                }}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Lifeline Recharge Floating Modal */}
+      <AnimatePresence>
+        {rechargePrompt && phase === 'ANSWERING' && (
+          <motion.div
+            key="recharge-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: 'easeInOut' }}
+            className="fixed inset-0 z-40 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4"
+            onClick={() => {
+              soundEngine.playClick();
+              setRechargePrompt(null);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              transition={{ duration: 0.4, ease: 'easeInOut' }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-[#0F1C3D] border border-[#D9A441]/45 rounded-2xl p-5 space-y-4 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-[#F2C96B]">
+                    استعادة وسيلة «{LIFELINE_LABELS[rechargePrompt]}»
+                  </h3>
+                  <p className="text-xs text-[#F8F5EE]/75 mt-1">
+                    شاهد إعلاناً قصيراً مجاناً أو استخدم{' '}
+                    {COIN_COSTS.restoreLifeline} عملة من رصيدك.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setRechargePrompt(null);
+                  }}
+                  aria-label="إغلاق"
+                  className="p-1.5 text-[#F8F5EE]/60 hover:text-[#F8F5EE] cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    onRequestAdReward({
+                      kind: 'restore_lifeline',
+                      title: `استعادة وسيلة ${LIFELINE_LABELS[rechargePrompt]}`,
+                      rewardLabel: `إعادة تفعيل ${LIFELINE_LABELS[rechargePrompt]}`,
+                      lifelineKey: rechargePrompt,
+                      onComplete: () => restoreLifeline(rechargePrompt),
+                    });
+                  }}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold bg-[#D9A441] hover:bg-[#F2C96B] text-[#060D1F] whitespace-nowrap cursor-pointer"
+                >
+                  <PlayCircle className="h-4 w-4" aria-hidden="true" />
+                  <span>استعادة بإعلان</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={profile.coins < COIN_COSTS.restoreLifeline}
+                  onClick={() => {
+                    soundEngine.playClick();
+                    if (onSpendCoins(COIN_COSTS.restoreLifeline)) {
+                      restoreLifeline(rechargePrompt);
+                    }
+                  }}
+                  className={`inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold whitespace-nowrap ${
+                    profile.coins >= COIN_COSTS.restoreLifeline
+                      ? 'bg-white/15 hover:bg-white/20 text-[#F8F5EE] cursor-pointer'
+                      : 'bg-white/5 text-[#F8F5EE]/35 cursor-not-allowed'
+                  }`}
+                >
+                  <Coins
+                    className="h-4 w-4 text-[#F2C96B]"
+                    aria-hidden="true"
+                  />
+                  <span>{COIN_COSTS.restoreLifeline} عملة</span>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Withdraw Confirmation Floating Modal */}
+      <AnimatePresence>
+        {showWithdrawConfirm && (
+          <motion.div
+            key="withdraw-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: 'easeInOut' }}
+            className="fixed inset-0 z-40 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4"
+            role="dialog"
+            aria-label="تأكيد الانسحاب"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              transition={{ duration: 0.4, ease: 'easeInOut' }}
+              className="w-full max-w-md bg-[#112046] border border-[#D9A441]/45 rounded-2xl p-5 space-y-4 shadow-2xl"
+            >
+              <div>
+                <h3 className="text-base font-bold text-[#F2C96B]">
+                  الانسحاب والاحتفاظ بمبلغ {formatDinar(currentEarnedPrize)}؟
+                </h3>
+                <p className="text-xs text-[#F8F5EE]/75 mt-1">
+                  ستغادر الاستوديو بكامل رصيدك المحقق وعملات المرحلة.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setShowWithdrawConfirm(false);
+                  }}
+                  className="px-4 py-2 text-xs font-medium text-[#F8F5EE]/85 bg-white/10 rounded-xl hover:text-[#F8F5EE] whitespace-nowrap cursor-pointer"
+                >
+                  إكمال اللعب
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmWithdraw}
+                  className="px-4 py-2 text-xs font-bold text-[#060D1F] bg-[#D9A441] hover:bg-[#F2C96B] rounded-xl whitespace-nowrap cursor-pointer"
+                >
+                  تأكيد الانسحاب
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Mobile Prize Ladder Drawer */}
+      <AnimatePresence>
+        {showMobileLadder && (
+          <motion.div
+            key="mobile-ladder-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeInOut' }}
+            className="fixed inset-0 z-50 lg:hidden bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-label="سلم الجوائز"
+            onClick={() => {
+              soundEngine.playClick();
+              setShowMobileLadder(false);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.45, ease: 'easeInOut' }}
+              className="w-full max-w-sm max-h-[85dvh] relative"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playClick();
+                  setShowMobileLadder(false);
+                }}
+                aria-label="إغلاق سلم الجوائز"
+                className="absolute left-3 top-3 z-10 p-2 rounded-lg bg-white/10 text-[#F8F5EE] hover:bg-white/20 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+              <PrizeLadder
+                currentLevel={currentLevel}
+                clearedLevel={clearedLevel}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

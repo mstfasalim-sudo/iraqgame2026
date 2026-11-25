@@ -12,10 +12,10 @@ export function PrizeLadder({ currentLevel, clearedLevel }: PrizeLadderProps) {
   return (
     <aside
       aria-label="سلم الجوائز"
-      className="bg-[#0B1530]/90 border border-[#D9A441]/20 rounded-xl p-5 flex flex-col justify-between h-full"
+      className="bg-[#0B1530]/90 border border-[#D9A441]/20 rounded-xl p-3.5 flex flex-col justify-between h-full"
     >
-      <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10">
-        <h2 className="text-lg font-bold text-[#F8F5EE] font-display">
+      <div className="flex items-center justify-between pb-2 mb-2 border-b border-white/10">
+        <h2 className="text-base font-bold text-[#F8F5EE] font-display">
           سلم الجوائز
         </h2>
         <span className="text-xs text-[#F8F5EE]/60 tabular-nums">
@@ -23,7 +23,7 @@ export function PrizeLadder({ currentLevel, clearedLevel }: PrizeLadderProps) {
         </span>
       </div>
 
-      <ol className="space-y-1 flex-1 flex flex-col justify-between">
+      <ol className="space-y-0.5 flex-1 flex flex-col justify-between">
         {reversedLadder.map((step) => {
           const isCurrent = step.level === currentLevel;
           const isCleared = step.level <= clearedLevel;
@@ -33,7 +33,7 @@ export function PrizeLadder({ currentLevel, clearedLevel }: PrizeLadderProps) {
             <li
               key={step.level}
               aria-current={isCurrent ? 'step' : undefined}
-              className={`flex items-center justify-between px-3 py-1.5 rounded-lg text-sm transition-colors duration-150 ${
+              className={`flex items-center justify-between px-2.5 py-1 rounded-lg text-xs xl:text-sm transition-colors duration-150 ${
                 isCurrent
                   ? 'bg-[#D9A441] text-[#060D1F] font-bold shadow-sm'
                   : isCleared

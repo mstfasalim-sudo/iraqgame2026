@@ -1,8 +1,7 @@
-import { DeveloperInfo, UserProfile, UserSettings } from '../types/game';
+import { UserProfile, UserSettings } from '../types/game';
 
 const PROFILE_KEY = 'iraqi_millionaire_profile_v2';
 const SETTINGS_KEY = 'iraqi_millionaire_settings_v3';
-const DEVELOPER_KEY = 'iraqi_millionaire_developer_v1';
 
 export function getTodayKey(): string {
   const now = new Date();
@@ -17,6 +16,7 @@ export const DEFAULT_PROFILE: UserProfile = {
   governorate: 'بغداد',
   emblem: 'palm',
   coins: 200,
+  totalPoints: 0,
   bestPrize: 0,
   gamesPlayed: 0,
   totalCorrect: 0,
@@ -32,15 +32,6 @@ export const DEFAULT_SETTINGS: UserSettings = {
   answerStyle: 'instant',
 };
 
-export const DEFAULT_DEVELOPER_INFO: DeveloperInfo = {
-  name: 'فريق تطوير المليون العراقي',
-  role: 'تطوير وتصميم التطبيقات الثقافية والألعاب العراقية',
-  email: 'contact@iraqimillion.app',
-  website: 'https://iraqimillion.app',
-  bio: 'تطبيق مسابقات عراقي مجاني يهدف لإحياء الأمثال الشعبية البغدادية وتراث وتاريخ العراق بأسلوب تفاعلي ممتع لجميع الأعمار.',
-  version: '2.1',
-};
-
 export function loadProfile(): UserProfile {
   try {
     const raw = window.localStorage.getItem(PROFILE_KEY);
@@ -48,6 +39,18 @@ export function loadProfile(): UserProfile {
     const parsed = JSON.parse(raw) as Partial<UserProfile>;
     const today = getTodayKey();
     const isSameDay = parsed.lastAdDate === today;
+
+    const safeTotalCorrect =
+      typeof parsed.totalCorrect === 'number' && parsed.totalCorrect >= 0
+        ? Math.floor(parsed.totalCorrect)
+        : 0;
+
+    const safeTotalPoints =
+      typeof parsed.totalPoints === 'number' &&
+      Number.isFinite(parsed.totalPoints) &&
+      parsed.totalPoints >= 0
+        ? Math.floor(parsed.totalPoints)
+        : safeTotalCorrect * 10;
 
     return {
       ...DEFAULT_PROFILE,
@@ -62,6 +65,7 @@ export function loadProfile(): UserProfile {
         parsed.coins >= 0
           ? Math.floor(parsed.coins)
           : DEFAULT_PROFILE.coins,
+      totalPoints: safeTotalPoints,
       bestPrize:
         typeof parsed.bestPrize === 'number' && parsed.bestPrize >= 0
           ? parsed.bestPrize
@@ -70,10 +74,7 @@ export function loadProfile(): UserProfile {
         typeof parsed.gamesPlayed === 'number' && parsed.gamesPlayed >= 0
           ? parsed.gamesPlayed
           : 0,
-      totalCorrect:
-        typeof parsed.totalCorrect === 'number' && parsed.totalCorrect >= 0
-          ? parsed.totalCorrect
-          : 0,
+      totalCorrect: safeTotalCorrect,
       totalAdsWatched:
         typeof parsed.totalAdsWatched === 'number' && parsed.totalAdsWatched >= 0
           ? parsed.totalAdsWatched
@@ -131,48 +132,6 @@ export function loadSettings(): UserSettings {
 export function saveSettings(settings: UserSettings): void {
   try {
     window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  } catch {
-    // Ignore storage errors
-  }
-}
-
-export function loadDeveloperInfo(): DeveloperInfo {
-  try {
-    const raw = window.localStorage.getItem(DEVELOPER_KEY);
-    if (!raw) return { ...DEFAULT_DEVELOPER_INFO };
-    const parsed = JSON.parse(raw) as Partial<DeveloperInfo>;
-    return {
-      ...DEFAULT_DEVELOPER_INFO,
-      ...parsed,
-      name:
-        typeof parsed.name === 'string' && parsed.name.trim()
-          ? parsed.name.trim().slice(0, 60)
-          : DEFAULT_DEVELOPER_INFO.name,
-      role:
-        typeof parsed.role === 'string' && parsed.role.trim()
-          ? parsed.role.trim().slice(0, 90)
-          : DEFAULT_DEVELOPER_INFO.role,
-      email:
-        typeof parsed.email === 'string'
-          ? parsed.email.trim().slice(0, 80)
-          : DEFAULT_DEVELOPER_INFO.email,
-      website:
-        typeof parsed.website === 'string'
-          ? parsed.website.trim().slice(0, 120)
-          : DEFAULT_DEVELOPER_INFO.website,
-      bio:
-        typeof parsed.bio === 'string' && parsed.bio.trim()
-          ? parsed.bio.trim().slice(0, 260)
-          : DEFAULT_DEVELOPER_INFO.bio,
-    };
-  } catch {
-    return { ...DEFAULT_DEVELOPER_INFO };
-  }
-}
-
-export function saveDeveloperInfo(info: DeveloperInfo): void {
-  try {
-    window.localStorage.setItem(DEVELOPER_KEY, JSON.stringify(info));
   } catch {
     // Ignore storage errors
   }

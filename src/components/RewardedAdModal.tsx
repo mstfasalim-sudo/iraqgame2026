@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Gift, PlayCircle, X } from 'lucide-react';
+import { CheckCircle2, Gift, PlayCircle, WifiOff, X } from 'lucide-react';
 import { AdRewardRequest } from '../types/game';
 import {
   ADMOB_CONFIG,
   recordAdImpression,
   showAdMobRewarded,
 } from '../utils/ads';
+import { useOnlineStatus } from '../utils/offline';
 import { soundEngine } from '../utils/sound';
 import { ResilientImage } from './ResilientImage';
 
@@ -38,6 +39,7 @@ export function RewardedAdModal({ request, onClose }: RewardedAdModalProps) {
   const [secondsLeft, setSecondsLeft] = useState(AD_DURATION_SECONDS);
   const [claimed, setClaimed] = useState(false);
   const [handledNatively, setHandledNatively] = useState(false);
+  const online = useOnlineStatus();
 
   const spot = useMemo(() => {
     if (!request) return CULTURAL_SPOTS[0];
@@ -45,7 +47,7 @@ export function RewardedAdModal({ request, onClose }: RewardedAdModalProps) {
   }, [request]);
 
   useEffect(() => {
-    if (!request) return;
+    if (!request || !online) return;
     let cancelled = false;
     setSecondsLeft(AD_DURATION_SECONDS);
     setClaimed(false);
@@ -85,9 +87,43 @@ export function RewardedAdModal({ request, onClose }: RewardedAdModalProps) {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [request, onClose]);
+  }, [request, onClose, online]);
 
   if (!request || handledNatively) return null;
+
+  if (!online) {
+    return (
+      <div
+        className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-label="عدم توفر الإنترنت للإعلان"
+      >
+        <div className="w-full max-w-md rounded-2xl bg-[#0B1530] border border-[#D9A441]/35 p-6 space-y-4 text-center shadow-2xl">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-[#D9A441]/15 border border-[#D9A441]/35 flex items-center justify-center text-[#F2C96B]">
+            <WifiOff className="h-6 w-6" aria-hidden="true" />
+          </div>
+          <h2 className="font-display text-xl font-bold text-[#F8F5EE]">
+            لا يوجد اتصال بالإنترنت حالياً
+          </h2>
+          <p className="text-sm text-[#F8F5EE]/75 leading-relaxed">
+            يمكنك مواصلة اللعب وتصفح جميع الأسئلة والأمثال بدون إنترنت، وستعود
+            إعلانات المكافآت تلقائياً فور توفر الاتصال.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              soundEngine.playClick();
+              onClose();
+            }}
+            className="w-full py-3 rounded-xl text-sm font-bold text-[#060D1F] bg-[#D9A441] hover:bg-[#F2C96B] cursor-pointer"
+          >
+            متابعة اللعب
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const isFinished = secondsLeft === 0;
   const progressPct = Math.round(

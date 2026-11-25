@@ -1,45 +1,61 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Megaphone, X } from 'lucide-react';
 import {
   ADMOB_CONFIG,
   recordAdImpression,
   showAdMobInterstitial,
 } from '../utils/ads';
+import { TEST_MODE } from '../utils/config';
+import { isOnline } from '../utils/offline';
 import { soundEngine } from '../utils/sound';
 import { ResilientImage } from './ResilientImage';
 
+export type InterstitialContext = 'before_result' | 'stage_break';
+
 interface InterstitialAdModalProps {
   open: boolean;
+  context?: InterstitialContext;
   onContinue: () => void;
 }
 
-const SKIP_DELAY_SECONDS = 4;
+const SKIP_DELAY_SECONDS = 3;
 
 export function InterstitialAdModal({
   open,
+  context = 'before_result',
   onContinue,
 }: InterstitialAdModalProps) {
   const [secondsLeft, setSecondsLeft] = useState(SKIP_DELAY_SECONDS);
-  const [handledNatively, setHandledNatively] = useState(false);
+  const onContinueRef = useRef(onContinue);
+  onContinueRef.current = onContinue;
 
   useEffect(() => {
     if (!open) return;
 
     let cancelled = false;
-    setSecondsLeft(SKIP_DELAY_SECONDS);
-    setHandledNatively(false);
 
+    // When offline, skip interstitial immediately so gameplay continues smoothly
+    if (!isOnline()) {
+      onContinueRef.current();
+      return;
+    }
+
+    // On native Android/iOS, always invoke the native AdMob Interstitial directly.
+    // showAdMobInterstitial is fail-safe: if offline or failed, it immediately calls onContinue.
     if (ADMOB_CONFIG.isNativePlatform) {
       showAdMobInterstitial(() => {
-        if (!cancelled) onContinue();
-      }).then((shown) => {
-        if (!cancelled && shown) {
-          setHandledNatively(true);
+        if (!cancelled) {
+          onContinueRef.current();
         }
       });
-    } else {
-      recordAdImpression('interstitial');
+      return () => {
+        cancelled = true;
+      };
     }
+
+    // Web preview fallback
+    setSecondsLeft(SKIP_DELAY_SECONDS);
+    recordAdImpression('interstitial');
 
     const intervalId = window.setInterval(() => {
       setSecondsLeft((prev) => {
@@ -55,11 +71,20 @@ export function InterstitialAdModal({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [open, onContinue]);
+  }, [open]);
 
-  if (!open || handledNatively) return null;
+  // Never render the web fallback card on native Android/iOS or when offline
+  if (!open || ADMOB_CONFIG.isNativePlatform || !isOnline()) return null;
 
   const canSkip = secondsLeft === 0;
+
+  const titleText =
+    context === 'stage_break'
+      ? 'فاصل إعلاني قصير قبل المرحلة التالية'
+      : 'فاصل إعلاني قبل عرض نتيجتك النهائية';
+
+  const continueLabel =
+    context === 'stage_break' ? 'متابعة المسابقة' : 'عرض النتيجة النهائية';
 
   const handleProceed = () => {
     if (!canSkip) return;
@@ -79,8 +104,7 @@ export function InterstitialAdModal({
           <div className="flex items-center gap-2 text-xs text-[#F2C96B]">
             <Megaphone className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span>
-              Google AdMob · إعلان بيني{' '}
-              {ADMOB_CONFIG.isTesting ? '(تجريبي)' : ''}
+              {TEST_MODE ? 'إعلان بيني AdMob (تجريبي)' : 'إعلان'}
             </span>
           </div>
 
@@ -88,7 +112,7 @@ export function InterstitialAdModal({
             type="button"
             disabled={!canSkip}
             onClick={handleProceed}
-            className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
               canSkip
                 ? 'bg-white/15 hover:bg-white/25 text-[#F8F5EE] cursor-pointer'
                 : 'bg-white/5 text-[#F8F5EE]/45 cursor-not-allowed'
@@ -97,7 +121,7 @@ export function InterstitialAdModal({
             {canSkip ? (
               <>
                 <X className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>تخطي</span>
+                <span>إغلاق</span>
               </>
             ) : (
               <span className="tabular-nums">إغلاق بعد {secondsLeft} ث</span>
@@ -108,8 +132,8 @@ export function InterstitialAdModal({
         <div className="relative h-56 bg-[#060D1F]">
           <ResilientImage
             src="/src/assets/images/baghdad_heritage_card_1795522142765.jpg"
-            alt="إعلان بيني Google AdMob"
-            fallbackLabel="إعلان بيني Google AdMob"
+            alt="فاصل إعلاني"
+            fallbackLabel="فاصل إعلاني"
             className="w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#0B1530] via-[#0B1530]/45 to-transparent" />
@@ -118,34 +142,31 @@ export function InterstitialAdModal({
               id="interstitial-ad-title"
               className="font-display text-2xl font-bold text-[#F8F5EE]"
             >
-              فاصل إعلاني قبل انطلاق جولتك الجديدة
+              {titleText}
             </h2>
-            <p className="text-xs text-[#F8F5EE]/70 mt-1.5" dir="ltr">
-              Interstitial Unit: {ADMOB_CONFIG.interstitialId}
-            </p>
+            {TEST_MODE && (
+              <p className="text-xs text-[#F8F5EE]/70 mt-1.5" dir="ltr">
+                Interstitial Unit: {ADMOB_CONFIG.interstitialId}
+              </p>
+            )}
           </div>
         </div>
 
-        <div className="p-5 flex items-center justify-between gap-4">
-          <span className="text-xs text-[#F8F5EE]/55">
-            @capacitor-community/admob
-          </span>
+        <div className="p-5 flex items-center justify-end">
           <button
             type="button"
             disabled={!canSkip}
             onClick={handleProceed}
-            className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-colors whitespace-nowrap ${
+            className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-bold transition-colors whitespace-nowrap ${
               canSkip
                 ? 'bg-[#D9A441] hover:bg-[#F2C96B] text-[#060D1F] cursor-pointer'
                 : 'bg-white/10 text-[#F8F5EE]/40 cursor-not-allowed'
             }`}
           >
             <span>
-              {canSkip
-                ? 'ابدأ الجولة الآن'
-                : `جاري التحضير (${secondsLeft} ث)`}
+              {canSkip ? continueLabel : `جاري التحضير (${secondsLeft} ث)`}
             </span>
-            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            <ArrowLeft className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
       </div>

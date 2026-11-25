@@ -120,6 +120,7 @@ export interface UserProfile {
   governorate: string;
   emblem: AvatarEmblemId;
   coins: number;
+  totalPoints: number;
   bestPrize: number;
   gamesPlayed: number;
   totalCorrect: number;
@@ -267,23 +268,45 @@ export function getCoinsForLevel(clearedLevel: number): number {
   return step ? step.coinsReward : 10;
 }
 
-export function getPlayerRank(totalCorrect: number): {
+export function formatPoints(points: number): string {
+  return `${points.toLocaleString('en-US')} نقطة`;
+}
+
+export function getPointsForDifficulty(difficulty: DifficultyTier): number {
+  if (difficulty === 3) return 20;
+  if (difficulty === 2) return 15;
+  return 10;
+}
+
+export interface PlayerRankInfo {
   title: string;
   nextTitle: string | null;
   progressPct: number;
   remainingForNext: number;
-} {
+  currentMin: number;
+  nextThreshold: number | null;
+  tierIndex: number;
+}
+
+/**
+ * Iraqi Titles & Ranks System based on cumulative player points:
+ * - 0 to 100 points: مبتدئ بالديوان
+ * - 101 to 300 points: فاهم بالأمثال
+ * - 301 to 600 points: حكيم الديرة
+ * - More than 600 points: شيخ العارفين
+ */
+export function getPlayerRank(totalPoints: number): PlayerRankInfo {
+  const safePoints = Math.max(0, Math.floor(totalPoints));
   const tiers = [
-    { min: 0, title: 'ضيف الاستوديو' },
-    { min: 15, title: 'متسابق واعد' },
-    { min: 40, title: 'عريف الديوان' },
-    { min: 80, title: 'راوي بغداد' },
-    { min: 140, title: 'موسوعة العراق' },
+    { min: 0, max: 100, title: 'مبتدئ بالديوان' },
+    { min: 101, max: 300, title: 'فاهم بالأمثال' },
+    { min: 301, max: 600, title: 'حكيم الديرة' },
+    { min: 601, max: Infinity, title: 'شيخ العارفين' },
   ];
 
   let currentIdx = 0;
   for (let i = tiers.length - 1; i >= 0; i--) {
-    if (totalCorrect >= tiers[i].min) {
+    if (safePoints >= tiers[i].min) {
       currentIdx = i;
       break;
     }
@@ -291,21 +314,30 @@ export function getPlayerRank(totalCorrect: number): {
 
   const current = tiers[currentIdx];
   const next = tiers[currentIdx + 1] ?? null;
+
   if (!next) {
     return {
       title: current.title,
       nextTitle: null,
       progressPct: 100,
       remainingForNext: 0,
+      currentMin: current.min,
+      nextThreshold: null,
+      tierIndex: currentIdx,
     };
   }
 
-  const span = next.min - current.min;
-  const gained = totalCorrect - current.min;
+  const rangeStart = currentIdx === 0 ? 0 : current.min - 1;
+  const span = next.min - rangeStart;
+  const gained = safePoints - rangeStart;
+
   return {
     title: current.title,
     nextTitle: next.title,
-    progressPct: Math.min(100, Math.round((gained / span) * 100)),
-    remainingForNext: Math.max(0, next.min - totalCorrect),
+    progressPct: Math.min(100, Math.max(0, Math.round((gained / span) * 100))),
+    remainingForNext: Math.max(0, next.min - safePoints),
+    currentMin: current.min,
+    nextThreshold: next.min,
+    tierIndex: currentIdx,
   };
 }
