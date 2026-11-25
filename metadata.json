@@ -1,0 +1,6 @@
+{
+  "name": "المليون العراقي",
+  "description": "مسابقة أسئلة وأجوبة وأمثال وتراث عراقي بأسلوب برنامج من سيربح المليون مع أربع وسائل مساعدة وديوان للأمثال العراقية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

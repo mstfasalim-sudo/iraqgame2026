@@ -1,0 +1,18 @@
+import type { CapacitorConfig } from '@capacitor/cli';
+
+const config: CapacitorConfig = {
+  appId: 'com.iraqimillion.app',
+  appName: 'المليون العراقي',
+  webDir: 'dist',
+  server: {
+    androidScheme: 'https',
+  },
+  android: {
+    backgroundColor: '#060D1F',
+    allowMixedContent: false,
+    captureInput: true,
+    webContentsDebuggingEnabled: false,
+  },
+};
+
+export default config;
