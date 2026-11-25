@@ -28,11 +28,14 @@ jobs:
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Setup Android & Capacitor
+      - name: Setup Android, Capacitor & App Icons
         run: |
           npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
-          npx cap init "IraqGame" "com.iraqgame.app" --web-dir=dist || true
+          npm install -D @capacitor/assets --legacy-peer-deps
+          npx cap init "المليون العراقي" "com.iraqimillion.app" --web-dir=dist || true
           npx cap add android || true
+          node scripts/sync-admob-android.mjs
+          npx capacitor-assets generate --android --iconBackgroundColor '#060D1F' --iconBackgroundColorDark '#060D1F' --splashBackgroundColor '#060D1F' --splashBackgroundColorDark '#060D1F'
           npx cap sync android
 
       - name: Build APK
