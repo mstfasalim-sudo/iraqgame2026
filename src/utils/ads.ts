@@ -26,7 +26,7 @@ export interface AdMetrics {
   rewardedImpressions: number;
 }
 
-// Official Google AdMob Android Test IDs
+// Official Google AdMob Android Test IDs (used ONLY when VITE_TEST_MODE="true")
 export const GOOGLE_TEST_IDS = {
   appId: 'ca-app-pub-3940256099942544~3347511713',
   bannerId: 'ca-app-pub-3940256099942544/6300978111',
@@ -34,29 +34,35 @@ export const GOOGLE_TEST_IDS = {
   rewardedId: 'ca-app-pub-3940256099942544/5224354917',
 } as const;
 
+// Official Production Google AdMob IDs for Google Play release
+export const PRODUCTION_ADMOB_IDS = {
+  appId: 'ca-app-pub-5162748576235440~5346281620',
+  bannerId: 'ca-app-pub-5162748576235440/8982274301',
+  interstitialId: 'ca-app-pub-5162748576235440/1678499359',
+} as const;
+
 const AD_METRICS_KEY = 'iraqi_millionaire_admob_metrics_v1';
 
-// In TEST_MODE always use Google's official Android test IDs;
-// in production use environment variables (with safe fallback if unset).
+// Strictly false in production unless explicitly enabled via VITE_TEST_MODE="true"
 const isTestingMode =
-  TEST_MODE || (import.meta.env.VITE_ADMOB_TESTING ?? 'false') === 'true';
+  TEST_MODE || import.meta.env.VITE_ADMOB_TESTING === 'true';
 
 export const ADMOB_CONFIG: AdMobConfig = {
   appId: TEST_MODE
     ? GOOGLE_TEST_IDS.appId
-    : (import.meta.env.VITE_ADMOB_APP_ID || '').trim() || GOOGLE_TEST_IDS.appId,
+    : (import.meta.env.VITE_ADMOB_APP_ID || '').trim() ||
+      PRODUCTION_ADMOB_IDS.appId,
   bannerId: TEST_MODE
     ? GOOGLE_TEST_IDS.bannerId
     : (import.meta.env.VITE_ADMOB_BANNER_ID || '').trim() ||
-      GOOGLE_TEST_IDS.bannerId,
+      PRODUCTION_ADMOB_IDS.bannerId,
   interstitialId: TEST_MODE
     ? GOOGLE_TEST_IDS.interstitialId
     : (import.meta.env.VITE_ADMOB_INTERSTITIAL_ID || '').trim() ||
-      GOOGLE_TEST_IDS.interstitialId,
+      PRODUCTION_ADMOB_IDS.interstitialId,
   rewardedId: TEST_MODE
     ? GOOGLE_TEST_IDS.rewardedId
-    : (import.meta.env.VITE_ADMOB_REWARDED_ID || '').trim() ||
-      GOOGLE_TEST_IDS.rewardedId,
+    : (import.meta.env.VITE_ADMOB_REWARDED_ID || '').trim(),
   isTesting: isTestingMode,
   isNativePlatform: Capacitor.isNativePlatform(),
 };
@@ -198,10 +204,12 @@ export async function initAdMob(): Promise<void> {
     // Preload interstitial and rewarded ads silently in the background
     preloadInterstitial().catch(() => {});
 
-    AdMob.prepareRewardVideoAd({
-      adId: ADMOB_CONFIG.rewardedId,
-      isTesting: ADMOB_CONFIG.isTesting,
-    }).catch(() => {});
+    if (ADMOB_CONFIG.rewardedId) {
+      AdMob.prepareRewardVideoAd({
+        adId: ADMOB_CONFIG.rewardedId,
+        isTesting: ADMOB_CONFIG.isTesting,
+      }).catch(() => {});
+    }
   } catch {
     // Never block app startup if AdMob fails to initialize
   }
@@ -330,7 +338,13 @@ export async function showAdMobRewarded(
   onRewardGranted: () => void,
   onDismissed?: () => void
 ): Promise<boolean> {
-  if (!ADMOB_CONFIG.isNativePlatform || !isOnline()) return false;
+  if (
+    !ADMOB_CONFIG.isNativePlatform ||
+    !ADMOB_CONFIG.rewardedId ||
+    !isOnline()
+  ) {
+    return false;
+  }
 
   try {
     if (!admobInitialized) await initAdMob();

@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android Release AAB & Debug APK
 
 on:
   push:
@@ -8,6 +8,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      VITE_TEST_MODE: 'false'
+      VITE_ADMOB_TESTING: 'false'
+      VITE_ADMOB_APP_ID: 'ca-app-pub-5162748576235440~5346281620'
+      VITE_ADMOB_BANNER_ID: 'ca-app-pub-5162748576235440/8982274301'
+      VITE_ADMOB_INTERSTITIAL_ID: 'ca-app-pub-5162748576235440/1678499359'
+      VITE_DEV_NAME: 'MUSTAFA SALAM'
+      VITE_DEV_EMAIL: 'mustafaalqaraawi@gmail.com'
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,12 +32,12 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install dependencies & Build Web
+      - name: Install dependencies & Build Web (Production)
         run: |
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Setup Android, Capacitor & App Icons
+      - name: Setup Android, Capacitor, AdMob & App Icons
         run: |
           npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
           npm install -D @capacitor/assets --legacy-peer-deps
@@ -38,14 +47,77 @@ jobs:
           npx capacitor-assets generate --android --iconBackgroundColor '#060D1F' --iconBackgroundColorDark '#060D1F' --splashBackgroundColor '#060D1F' --splashBackgroundColorDark '#060D1F'
           npx cap sync android
 
-      - name: Build APK
+      - name: Prepare Release Signing Keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/android/app/release-keystore.jks"
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ]; then
+            echo "Using repository signing keystore from GitHub Secrets..."
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+            FINAL_KEY_PASS="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            echo "ANDROID_KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=${KEY_ALIAS}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=${FINAL_KEY_PASS}" >> "$GITHUB_ENV"
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No GitHub Secrets keystore found; generating a new Release Upload Keystore..."
+            GEN_PASS=$(openssl rand -hex 16)
+            GEN_ALIAS="iraqimillion-release"
+            keytool -genkeypair -v \
+              -storetype JKS \
+              -keystore "$KEYSTORE_FILE" \
+              -storepass "$GEN_PASS" \
+              -alias "$GEN_ALIAS" \
+              -keypass "$GEN_PASS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=MUSTAFA SALAM, OU=Mobile, O=IraqiMillion, L=Baghdad, S=Baghdad, C=IQ"
+            echo "::add-mask::$GEN_PASS"
+            echo "ANDROID_KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=${GEN_PASS}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=${GEN_ALIAS}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=${GEN_PASS}" >> "$GITHUB_ENV"
+            mkdir -p "${GITHUB_WORKSPACE}/keystore-export"
+            cp "$KEYSTORE_FILE" "${GITHUB_WORKSPACE}/keystore-export/release-keystore.jks"
+            {
+              printf 'Save these values securely as GitHub Repository Secrets so future Play Store updates use the same signing key:\n'
+              printf 'KEY_ALIAS=%s\n' "$GEN_ALIAS"
+              printf 'KEYSTORE_PASSWORD=%s\n' "$GEN_PASS"
+              printf 'KEY_PASSWORD=%s\n' "$GEN_PASS"
+              printf 'KEYSTORE_BASE64=%s\n' "$(base64 -w 0 "$KEYSTORE_FILE")"
+            } > "${GITHUB_WORKSPACE}/keystore-export/GITHUB_SECRETS_README.txt"
+            echo "generated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Signed Release AAB & Debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew bundleRelease assembleDebug
 
-      - name: Upload APK
+      - name: Upload Release AAB (Google Play Store)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Generated Keystore (Save Securely for Future Updates)
+        if: steps.keystore.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-keystore-backup
+          path: keystore-export/
+          retention-days: 7
